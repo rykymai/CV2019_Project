@@ -1,4 +1,4 @@
-/*
+
 
 
 /*#include <opencv2/opencv.hpp>
@@ -588,4 +588,3 @@ void peopleDetection(Mat cur, vector <Point2f> cur_corner) {
 
 }
 
-*/

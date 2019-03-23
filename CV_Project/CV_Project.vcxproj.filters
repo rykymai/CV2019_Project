@@ -15,7 +15,7 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="main_CV.cpp">
+    <ClCompile Include="main_CV_v2.cpp">
       <Filter>File di origine</Filter>
     </ClCompile>
   </ItemGroup>

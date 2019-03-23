@@ -1,0 +1,99 @@
+\section{Task 3- Active Safety System Design}
+\subsection{FCW-Frontal Collision Warning Algorithm}
+The aim of the FCW algorithm is to give to the driver a warning at the right time to avoid a collision with the 
+vehicle in front of him.\\
+For this task we have choosen the third algorithm: \textit{NHTSA Algorithm (Brunson)}.\\
+To implement this algorithm in matlab we define a function that takes in input the followings parameters:
+\begin{itemize}
+\item 
+\texttt{EgoSpeed} that is the following vehicle speed in m/s
+\item
+\texttt{Range} is the radar range to the leading vehicle
+\item
+\texttt{RangeRate} is the radar range rate to the leading vehicle
+\item
+\texttt{Sensitivity} of the driver, that can select warning sensitivity like: \textit{Near, Middle, Far}
+\item
+\texttt{brakePedalPosition} is the percent of the brake pedal position
+\end{itemize}
+And gives in ouputs:
+\begin{itemize}
+\item
+\texttt{warning} a boolean value that returns true if a warning should be given
+\item
+\texttt{levelAlert} that is the alert level like \textit{Early, Intermediate, Imminent}
+\end{itemize}\\
+These input variables are given time by time, by the car to the algorithm that derives
+the distance needed to avoid a collision and through a threshold gives or not a warning
+to the driver.
+To derive this distance we followed the equations described in the paper.
+\\
+At first we have to control if the \texttt{following speed} is greather than 25 MPH (miles per hour)
+then we check if the following vehicle is braking or not, we check it through the 
+data \texttt{brakePedalPosition} that the car gives, if this is above or below the 10\%.
+This algorithm work on 3 different level alert
+\begin{itemize}
+\item Early
+\item Intemediate
+\item Imminent
+\end{itemize}
+so we have to derive the distances for all these 3 cases.
+Inside the for loop described above we calculate the distanze for two cases with the 
+following 2 equations:
+\begin{itemize}
+\item Lead Moving Vehicle
+\[D_miss=r+\frac{1}{2}(a_{FV}-a_{FVmax})(t_{r})^2-\frac{1}{2}a_{LV}(t_{LVs})^2-(a_{FV}-a_{FVmax})t_{r}t_{FVs}
++v_{r}t_{FVs}+a_{LVs}t_{FVs}t_{LVs}-\frac{1}{2}a_{FVmax}(t_{FVs})^2\]
+\item Lead Stationary Vehicle 
+$t_{m}$ is the time to miss\\
+\[t_{m}=\frac{v_{r}+(a_{LV}-a_{FV})t_{r}}{a_{FVmax}-a_{LV}}+t_{r}\]
+\[D_miss=r+v_{r}t_{m}+\frac{1}{2}(a_{LV}-a_{FVmax})(t_{m})^2-a_{FV}-a_{FVmax})t_{m}t_{r} +
+\frac{1}{2}((a_{FV}-a_{FVmax})(t_{r})^2\]
+\item Threshold distance
+\[D_{thresh}=2+v_{FV}(0.1)\]
+\end{itemize}
+So at the end we have to choose the highest value of the true 3 values stored and 
+gives in output the correspondent level alert and the warning true or false.  
+
+
+
+\subsection{AEB-Autonomous Emergency Braking}
+The algorithm for AEB is based on avoiding the rear end collision by autonomous braking. 
+It consists of mainly two parts, namely, Threat Assessment (TA) algorithm, which  and Situation Assessment (SA) algorithm. 
+
+\subsubsection{Threat Assessment}
+The main function of this algorithm is to estimate the future states of the vehicles under 
+consideration in the concerned situation and try to avoid an accident. 
+The TA algorithm considers two vehicles in the situation as Host Vehicle (HV) and 
+Lead Vehicle (LV). Moreover, the Lead Vehicle is considered to be the only object in 
+the HV's path. One of the assumptions considered in the algorithm is that the acceleration 
+of the LV is constant until it comes to rest. The current state of the LV is determined by a
+ complex sensor fusion tracking system, which helps it assess the effort required to avoid the crash.\\ 
+
+Inputs to the Function are:
+
+Speed1 - Initial Host Vehicle Speed [m/s]\\
+Speed2 - Host Vehicle Speed at the next instant to Speed1 [m/s]\\
+YawRate - Host Vehicle Yaw Rate [rad/s]\\
+Range - Radar Range to the Lead Vehicle [m]\\
+RangeRate - Radar Range Rate to the Leading Vehicle [m/s]\\
+RangeAccel - Radar Range Acceleration to the Leading Vehicle [$m/s^2$]\\
+initLSpeed1 - Initial Lead Vehicle Speed [m/s]\\
+initLSpeed2 - Lead Vehicle Speed at the next instant to initLSpeed1 [m/s]\\
+steerRatio - Steering Ratio\\
+\\
+
+Outputs to the Function are:
+
+braking - boolean value (0/1) determines whether the collision can be physically avoided by braking\\
+steering - boolean value (0/1) determines whether the collision can be physically avoided by steering\\
+
+\subsubsubsection{Steering Threat Number}
+The effort needed to avoid the probable crash by steering is defined by the Steering Threat Number (STN) defined by: 
+\[STN = \frac{$a_{req,lat}$}{$a_{max,lat}$}\]    
+
+
+\(\frac{3x}{2}\)
+$a_{bc}$ or $a_{b_c}$
+
+\[Radar Acceleration = \frac{d(Range rate)}{dt}\]
