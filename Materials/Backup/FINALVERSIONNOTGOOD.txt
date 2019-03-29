@@ -1,0 +1,1076 @@
+#include <opencv2/opencv.hpp>
+#include <opencv2\highgui\highgui.hpp>
+#include <opencv2/dnn.hpp>
+#include <opencv2/dnn/shape_utils.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/highgui.hpp>
+#include <algorithm>
+#include <cstdlib>
+#include <stdio.h>
+#include <stdlib.h>
+#include <vector>
+#include <iostream>
+#include <math.h>
+#include <fstream>
+#include <opencv2/objdetect.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
+#include <iomanip>
+
+//////////////////////////////////////////
+//// CODE DEVELOPED BY:///////////////////
+//// RICCARDO MAISTRI, DONATO d'ACUNTO ///
+//// USING AN EXISTING CODE DEVELOPED BY /
+//// LORENZO ALDRIGHETTI /////////////////
+//////////////////////////////////////////
+//// UNIVERSITY OF TRENTO ////////////////
+//// COMPUTER VISION COURSE //////////////
+//// TRENTO - 23/03/2019 /////////////////
+//////////////////////////////////////////
+
+using namespace std;
+using namespace cv;
+using namespace cv::dnn;
+
+const int SMOOTHING_VAL = 5; // Parameter for averaging window filter, bigger is this and more smoothed is the result
+const double PI = 3.141592653;
+
+// Implemented Functions 
+bool isContained(Point2f p, Rect r);																								// To check if a point is contained in a Rectangle
+void drawArrow(Mat image, Point start, Point end, Scalar color, int arrow_magnitude, int thickness, int line_type, int shift);		// To draw an arrow on an output image/frame
+float euclideanDistP(Point& p, Point& q);																							// To compute the distance between 2 points (int)
+float euclideanDist(Point2f& p, Point2f& q);																						// To compute the distance between 2 points (float)
+vector<int> mode(vector<float> all_dist);																							// To compute the mode of a set of values (2 outs)
+void drawDisplacement(Mat img, vector<Point2f> keypointsCur, vector<Point2f> keypointsPrev, vector<float> allDisp);
+float angle(Point2f p1, Point2f p2);																								// To compute the angles between a vector and the horizon	
+int mode_single(vector<float> all_dist);																							// To compute the mode of a set of values (1 outs)
+
+struct TransformParam
+{
+	TransformParam() {}
+	TransformParam(double _dx, double _dy) {
+		dx = _dx;
+		dy = _dy;
+	}
+
+	double dx;
+	double dy;
+};
+
+struct Trajectory
+{
+	Trajectory() {}
+	Trajectory(double _x, double _y) {
+		x = _x;
+		y = _y;
+	}
+
+	double x;
+	double y;
+};
+
+class Person {
+private:
+	int id;
+
+public:
+	Rect ROI;										// Region of Interest
+	Point2f center;									// Center of the ROI
+	vector<Point2f> foreground_cur_people;			// Good feature points contained in the ROI (current frame)
+	vector<Point2f> foreground_prev_people;			// Good feature points contained in the ROI (current frame)
+	Point2f arrow_tail;
+	Point2f arrow_head;
+	vector<TransformParam> prev_to_cur_transform;	// To compute the smoothing (not yet implemented)
+	vector<float> all_dist;							// Vector containing all the distances between prev and cur feature points
+	vector<float> angles;							// All the angles between the motion vector and the horizon
+	vector<float> displacement;						// All the displacemente collected during the video
+	int mode_dist;
+	int mode_angle;
+	float mean_angle;
+	float mean_dist;
+	float mean_displacement;
+	vector<Rect> buf;								// Buffer to not lose the rectangle if the detection fails
+
+	Person() : center(), ROI(), arrow_tail(), arrow_head(), id() {};
+
+	Person(Rect _ROI, int _id) {
+		ROI = _ROI;
+		center = Point2f(ROI.x + ROI.width / 2, ROI.y + ROI.height / 2);
+		arrow_tail = center;
+		id = _id;
+	};
+
+	Person(Rect _ROI, vector<Point2f> _foreGnd_cur, vector<Point2f> _foreGnd_prev, Point2f _arrow_head, int _id) {
+
+		ROI = _ROI;
+		foreground_cur_people = _foreGnd_cur;
+		foreground_prev_people = _foreGnd_prev;
+		center = Point2f(ROI.x + ROI.width / 2, ROI.y + ROI.height / 2);
+		arrow_tail = center;
+		arrow_head = _arrow_head;
+
+		for (int i = 0; i < foreground_cur_people.size(); i++) {
+			all_dist.push_back(euclideanDist(foreground_cur_people[i], foreground_prev_people[i]));
+		}
+
+	};
+	void set_allDist_angles() {
+
+		for (int i = 0; i < foreground_cur_people.size(); i++) {
+			all_dist.push_back(euclideanDist(foreground_cur_people[i], foreground_prev_people[i]));
+			angles.push_back(angle(foreground_prev_people[i], foreground_cur_people[i]));
+		}
+
+	};
+
+	void initArrow() {
+		float x, y;
+		mean_angle = mean_angle + PI;
+		x = center.x + 3 * mean_dist * cos(mean_angle);
+		y = center.y + 3 * mean_dist * sin(mean_angle);
+		arrow_head = Point2f(x, y);
+		arrow_tail = Point2f(center);
+	};
+
+	void initID(int _id) {
+		id = _id;
+	};
+
+	int getID() {
+		return id;
+	};
+
+	void set_displacement() {
+		float sum = 0;
+		for (int i = 0; i < displacement.size(); i++) {
+			sum = sum + displacement[i];
+
+		}
+		if (displacement.size() != 0) {
+			mean_displacement = sum / displacement.size();
+
+		}
+		else {
+			mean_displacement = 0;
+		}
+	};
+};
+
+
+
+
+int main(int argc, char **argv)
+{
+
+	////////// YOLO INITIALIZATION AND DETECTION //////////
+
+	String modelConfiguration = "darknet/cfg/yolov2.cfg";//parser.get<String>("cfg");
+	String modelBinary = "../Materials/yolov2.weights";//parser.get<String>("model");
+	dnn::Net net = readNetFromDarknet(modelConfiguration, modelBinary);
+	if (net.empty())
+	{
+		cerr << "Can't load network by using the following files: " << endl;
+		cerr << "cfg-file:     " << modelConfiguration << endl;
+		cerr << "weights-file: " << modelBinary << endl;
+		cerr << "Models can be downloaded here:" << endl;
+		cerr << "https://pjreddie.com/darknet/yolo/" << endl;
+		exit(-1);
+	}
+
+	//Open video file and return 0 if the file don't exist
+	VideoCapture cap;
+
+	// Change HERE to set the video you want
+	cap.open("21_b.mp4");									// <-------- VIDEO INPUT
+	if (!cap.isOpened())
+	{
+		cout << "Couldn't open video: " << endl;
+		return -1;
+	}
+
+	// Create a Matrix that will be contain one frame of the video (previous and current) and their respective grey scale version
+	Mat cur, cur_grey;
+	Mat prev, prev_grey;
+
+	cap >> cur;
+
+	// Enable the record of the output video
+	VideoWriter recordOutput("../Output_yolo.avi", CV_FOURCC('D', 'I', 'V', 'X'), 30, cur.size(), true);
+	if (!recordOutput.isOpened())
+		return -1;
+
+	vector<string> classNamesVec;
+	ifstream classNamesFile("darknet/data/coco.names");
+	if (classNamesFile.is_open())
+	{
+		string className = "";
+		while (std::getline(classNamesFile, className))
+			classNamesVec.push_back(className);
+	}
+	// To Implement
+		// Create a txt file with the eleborated data
+	ofstream out_transform("prev_to_cur_transformation.txt");
+	ofstream out_trajectory("trajectory.txt");
+	//
+	Mat traj(Size(cur.cols, cur.rows), CV_8UC3, Scalar(0, 0, 0));
+
+	// Gain constant for correct the magnetude of the arrows and the space of the grid
+	int gain_dis = 10;
+	float gain_tra = .5;
+	int gain_sm = 10;
+	int dist = 50;
+
+	// Point that will contain the coordinate of the arrows (For motion camera estimation)
+	Point pt2, pt3, pt3prev, pt4;
+	Point center;
+
+	center.x = cur.cols / 2;
+	center.y = cur.rows / 2;
+
+	//Setting the trajectory starting from the middle of image and normalized with the gain constant
+	double x = traj.cols / 2 + traj.cols*gain_tra;
+	double y = traj.rows / 2 + traj.rows*gain_tra;
+
+	cap >> prev;
+
+	//Convert the original video in to grayscale video
+	cvtColor(prev, prev_grey, COLOR_BGR2GRAY);
+
+	// Now I get previous to current frame transformation for all frames
+	vector <TransformParam> prev_to_cur_transform;
+
+	int k = 1;
+	int max_frames = cap.get(CV_CAP_PROP_FRAME_COUNT);
+	Mat last_T;
+
+	vector<float> average_prev;
+	vector<Point2f> buffer;
+
+	// Vector containing people 
+	vector<Person> people;
+	vector<vector<Rect>> buffer_people;
+
+	while (true) {
+
+		cap >> cur; // get a new frame from camera/video or read image
+
+		Mat cur_yolo;
+		cur_yolo = cur;
+		if (cur_yolo.empty())
+		{
+			waitKey();
+			break;
+		}
+		if (cur_yolo.channels() == 4)
+			cvtColor(cur_yolo, cur_yolo, COLOR_BGRA2BGR);
+
+		Mat inputBlob = blobFromImage(cur_yolo, 1 / 255.F, Size(608, 608), Scalar(), true, false); // Convert Mat to batch of images
+		net.setInput(inputBlob, "data");                     									   // Set the network input
+		Mat detectionMat = net.forward();   													   // Compute output
+		vector<double> layersTimings;
+		double freq = getTickFrequency() / 1000;
+		double time = net.getPerfProfile(layersTimings) / freq;
+		float confidenceThreshold = 0.6;
+
+		vector<Rect> rect_final;
+		for (int i = 0; i < detectionMat.rows; i++)
+		{
+			const int probability_index = 5;
+			const int probability_size = detectionMat.cols - probability_index;
+			float *prob_array_ptr = &detectionMat.at<float>(i, probability_index);
+			size_t objectClass = max_element(prob_array_ptr, prob_array_ptr + probability_size) - prob_array_ptr;
+			float confidence = detectionMat.at<float>(i, (int)objectClass + probability_index);
+			if (confidence > confidenceThreshold)
+			{
+				float x = detectionMat.at<float>(i, 0);
+				float y = detectionMat.at<float>(i, 1);
+				float width = detectionMat.at<float>(i, 2);
+				float height = detectionMat.at<float>(i, 3);
+				int xLeftBottom = static_cast<int>((x - width / 2) * cur_yolo.cols);
+				int yLeftBottom = static_cast<int>((y - height / 2) * cur_yolo.rows);
+				int xRightTop = static_cast<int>((x + width / 2) * cur_yolo.cols);
+				int yRightTop = static_cast<int>((y + height / 2) * cur_yolo.rows);
+				Rect object(xLeftBottom, yLeftBottom,
+					xRightTop - xLeftBottom,
+					yRightTop - yLeftBottom);
+				if ("person" == String(classNamesVec[objectClass])) {								// To only consider the people class
+					//rectangle(cur, object, Scalar(0, 255, 0));
+					rect_final.push_back(object);
+				}
+
+
+			}
+
+
+		}
+		///////////////////////////////////
+		////////// YOLO FINISHED //////////
+		///////////////////////////////////
+
+		//////////////////////////////////////////////
+		////////// CAMERA MOTION ESTIMATION //////////
+		//////////////////////////////////////////////
+
+		//Draw a grid
+		traj = Scalar(0, 0, 0);
+		int width = traj.size().width;
+		int height = traj.size().height;
+
+		for (int i = 0; i < height; i += dist)
+			line(traj, Point(0, i), Point(width, i), cv::Scalar(255, 255, 255));
+
+		for (int i = 0; i < width; i += dist)
+			line(traj, Point(i, 0), Point(i, height), cv::Scalar(255, 255, 255));
+
+		if (cur.data == NULL) {
+			break;
+		}
+
+		cvtColor(cur, cur_grey, COLOR_BGR2GRAY);
+
+		// Now I define the vectors that will be contain the good feature points of current end previus frame, the status and error of optical flow
+		vector <Point2f> prev_corner, cur_corner;
+		vector <Point2f> prev_corner2, cur_corner2;
+		vector <uchar> status;
+		vector <float> err;
+
+		goodFeaturesToTrack(prev_grey, prev_corner, 1000, 0.01, 5);  //Detect the good feature points. I pass the max number of point to return, the quality threshold and the max euclidean distance between two points
+
+		
+
+		calcOpticalFlowPyrLK(prev_grey, cur_grey, prev_corner, cur_corner, status, err);	//Computing the optical flow
+
+		// I read all value returned by optial flow function and if the status is setted to false, I discard this value
+		for (size_t i = 0; i < status.size(); i++) {
+			if (status[i]) {
+				prev_corner2.push_back(prev_corner[i]);
+				cur_corner2.push_back(cur_corner[i]);
+
+			}
+		}
+
+		// UNCOMMENT THIS TO SEE ALL THE FEATURE POINTS IN THE FRAME
+		/*
+		for (int i = 0; i < size(prev_corner); i++) {
+			drawMarker(cur, Point(prev_corner2.at(i).x, prev_corner2.at(i).y), Scalar(255, 255, 255));
+		}
+		*/
+
+		//Compute the translation plus rotation of my 2D points
+		Mat T = estimateRigidTransform(prev_corner2, cur_corner2, false);
+
+		//In rare cases no transform is found. We'll just use the last known good transform.
+		if (T.data == NULL) {
+			last_T.copyTo(T);
+		}
+
+		T.copyTo(last_T);
+
+		// Extract dx and dy from trasformation matrix
+		double dx = T.at<double>(0, 2);
+		double dy = T.at<double>(1, 2);
+		float threshold = sqrt(dx*dx + dy * dy);
+		prev_to_cur_transform.push_back(TransformParam(dx, dy));
+
+		out_transform << k << " " << dx << " " << dy << " " << threshold << endl;	//Write in txt file
+
+		cur.copyTo(prev);
+		cur_grey.copyTo(prev_grey);
+
+		cout << "Frame: " << k << "/" << max_frames << " - good optical flow: " << prev_corner2.size() << endl;	//Output on console
+
+		vector <TransformParam> smoothed_displacement;
+
+		// Performing the averaging window for smoothing the result of displace
+		for (size_t i = 0; i < prev_to_cur_transform.size(); i++)
+		{
+			double sum_x = 0;
+			double sum_y = 0;
+			int count = 0;
+
+			for (int j = -SMOOTHING_VAL; j <= SMOOTHING_VAL; j++) {
+				if (i + j >= 0 && i + j < prev_to_cur_transform.size()) {
+					sum_x += prev_to_cur_transform[i + j].dx;
+					sum_y += prev_to_cur_transform[i + j].dy;
+
+					count++;
+				}
+			}
+
+			double avg_x = sum_x / count;
+			double avg_y = sum_y / count;
+
+			smoothed_displacement.push_back(TransformParam(avg_x, avg_y));
+
+			//Assign the vaule of x and y in a point moltiplied by a gain factor 
+			pt2.x = center.x + (-dx * gain_dis);
+			pt2.y = center.y + (-dy * gain_dis);
+
+			pt4.x = center.x + (-avg_x * gain_sm);
+			pt4.y = center.y + (-avg_y * gain_sm);
+		}
+
+		//Now i extimate the trajectory with an incremental variable that add/subtract his status every iteration with the average flow value. 
+		vector <Trajectory> trajectory;
+		x -= (center.x - pt4.x) / gain_sm;
+		y -= (center.y - pt4.y) / gain_sm;
+
+		trajectory.push_back(Trajectory(x, y));
+
+		out_trajectory << (k + 1) << " " << x << " " << y << endl;
+
+		pt3.x = (x*gain_tra);
+		pt3.y = (y*gain_tra);
+
+		pt3prev.x = pt3.x + (dx*gain_tra);
+		pt3prev.y = pt3.y + (dy*gain_tra);
+
+		drawArrow(cur, center, pt2, Scalar(0, 0, 255), 9, 2, 8, 0);		//Draw displacement
+		drawArrow(cur, center, pt4, Scalar(255, 0, 0), 9, 4, 8, 0);		//Draw displacement smooth
+		drawArrow(traj, pt3prev, pt3, Scalar(0, 0, 255), 9, 3, 8, 0);	//Draw the trajectory
+
+		vector<float> all_dist;
+		vector<Point2f> dist_comp;
+		for (size_t i = 0; i < cur_corner2.size(); i++) {
+			all_dist.push_back(euclideanDist(cur_corner2[i], prev_corner2[i]));
+		}
+
+		///////////////////////////////////////////////////////
+		////////// CAMERA MOTION ESTIMATION FINISHED //////////
+		///////////////////////////////////////////////////////
+
+
+		///////////////////////////////////////////////////////
+		//////// TRACKING AND PEOPLE MOTION ESTIMATION ////////
+		///////////////////////////////////////////////////////
+
+		// Vectors containing the points belonging to the foreground (in prev and cur) and to the background
+		vector<Point2f> background, foreground_cur, foreground_prev;
+
+		// To check if the feature points are contained in the 
+		for (size_t i = 0; i < rect_final.size(); i++) {
+			for (size_t j = 0; j < cur_corner2.size(); j++) {
+				if (isContained(cur_corner2[j], rect_final[i]) == true) {
+					foreground_prev.push_back(prev_corner2[j]);
+					foreground_cur.push_back(cur_corner2[j]);
+				}
+			}
+		}
+
+		// Vector containing all the distances between the prev and cur in the foreground set
+		vector<float> all_dist_fore;
+		vector<Point2f> dist_comp_fore;
+		for (size_t i = 0; i < foreground_cur.size(); i++) {
+			all_dist_fore.push_back(euclideanDist(foreground_cur[i], foreground_prev[i]));
+		}
+
+		// Computing the mode and deleting from the foreground the points that are not moving
+		vector<int> my_mode;
+		if (all_dist.size() != 0) {
+			my_mode = mode(all_dist);
+
+			//	out_transform << k << " " << my_mode[0] << " " << my_mode[1] << endl;	//Write in txt file
+
+			float max = 0.0;
+			float min = 0.0;
+			float offset = abs(my_mode[1] - my_mode[0]);
+
+			if (offset >= 4) {
+				offset = 3;
+			}
+			else {
+				offset = offset * 2.5; //*2
+			}
+
+			cout << "offset:" << offset << endl;
+
+			float sum = 0;
+
+			for (size_t i = 0; i < cur_corner2.size(); i++) {
+				sum = sum + all_dist[i];
+			}
+			float average_cur = sum / all_dist.size();
+			average_prev.push_back(average_cur);
+
+			float new_sum = 0;
+
+			for (size_t i = 0; i < average_prev.size(); i++) {
+				new_sum = new_sum + average_prev[i];
+			}
+			float new_average = new_sum / average_prev.size();
+
+
+			for (int i = 0; i < all_dist_fore.size(); i++) {
+				if (all_dist_fore[i] <= my_mode[0] + offset) {
+					all_dist_fore.erase(all_dist_fore.begin() + i);
+					foreground_cur.erase(foreground_cur.begin() + i);
+					foreground_prev.erase(foreground_prev.begin() + i);
+					i = i - 1;
+				}
+			}
+
+			float sum_fore = 0;
+
+			for (size_t i = 0; i < foreground_cur.size(); i++) {
+				float dist_fore = euclideanDist(foreground_cur[i], foreground_prev[i]);
+
+				sum_fore = sum_fore + dist_fore;
+			}
+
+			float average_fore = sum_fore / foreground_cur.size();
+
+			for (size_t i = 0; i < foreground_cur.size(); i++) {
+				if (euclideanDist(foreground_cur[i], foreground_prev[i]) > 2.5 * average_fore) {
+					foreground_cur.erase(foreground_cur.begin() + i);
+					foreground_prev.erase(foreground_prev.begin() + i);
+					i = i - 1;
+				}
+			}
+		}
+
+		// UNCOMMENT THIS TO SEE ALL THE ARROWS REPRESENTING THE MOVEMENT
+		/*
+		for (size_t i = 0; i < foreground_cur.size(); i++) {
+			drawArrow(cur, foreground_prev[i], foreground_cur[i], Scalar(0, 0, 255), 9, 2, 8, 0);
+		}
+		*/
+
+
+		// Histogram computation and comparison 
+
+		vector<Mat> src_prev, src_cur;
+		vector<Mat> hsv_prev, hsv_cur;
+		vector<MatND> hist_prev, hist_cur;
+
+
+		if (people.size() != 0) {
+
+			// Cropping the rectangles from the original prev frame
+			for (int i = 0; i < people.size(); i++) {
+				if (people[i].ROI.x < 0) {
+					people[i].ROI.x = 0;
+				}
+				if (people[i].ROI.y < 0) {
+					people[i].ROI.y = 0;
+				}
+				if (people[i].ROI.y + people[i].ROI.height > cur.rows) {
+					people[i].ROI.height = cur.rows - people[i].ROI.y;
+				}
+				if (people[i].ROI.x + people[i].ROI.width > cur.cols) {
+					people[i].ROI.width = cur.cols - people[i].ROI.x;
+				}
+
+				src_prev.push_back(prev(people[i].ROI));
+			}
+
+			// Cropping the rectangles from the original prev frame
+			for (int i = 0; i < rect_final.size(); i++) {
+				if (rect_final[i].x < 0) {
+					rect_final[i].x = 0;
+				}
+				if (rect_final[i].y < 0) {
+					rect_final[i].y = 0;
+				}
+				if (rect_final[i].y + rect_final[i].height > cur.rows) {
+					rect_final[i].height = cur.rows - rect_final[i].y;
+				}
+				if (rect_final[i].x + rect_final[i].width > cur.cols) {
+					rect_final[i].width = cur.cols - rect_final[i].x;
+				}
+
+				src_cur.push_back(cur(rect_final[i]));
+			}
+
+			// Convert to HSV the prev rectangles
+			for (int i = 0; i < src_prev.size(); i++) {
+				Mat tmp;
+				cvtColor(src_prev[i], tmp, COLOR_BGR2HSV);
+				hsv_prev.push_back(tmp);
+			}
+
+			// Convert to HSV the cur rectangles
+			for (int i = 0; i < src_cur.size(); i++) {
+				Mat tmp;
+				cvtColor(src_cur[i], tmp, COLOR_BGR2HSV);
+				hsv_cur.push_back(tmp);
+			}
+
+			// Using 50 bins for hue and 60 for saturation
+			int h_bins = 50; int s_bins = 60;
+			int histSize[] = { h_bins, s_bins };
+
+			// hue varies from 0 to 179, saturation from 0 to 255
+			float h_ranges[] = { 0, 180 };
+			float s_ranges[] = { 0, 256 };
+
+			const float* ranges[] = { h_ranges, s_ranges };
+
+			// Use the o-th and 1-st channels
+			int channels[] = { 0, 1 };
+
+			// Histograms of the prev
+			for (int i = 0; i < hsv_prev.size(); i++) {
+				Mat tmp;
+				calcHist(&hsv_prev[i], 1, channels, Mat(), tmp, 2, histSize, ranges, true, false);
+				normalize(tmp, tmp, 0, 1, NORM_MINMAX, -1, Mat());
+				hist_prev.push_back(tmp);
+			}
+
+			// Histograms of the cur
+			for (int i = 0; i < hsv_cur.size(); i++) {
+				Mat tmp;
+				calcHist(&hsv_cur[i], 1, channels, Mat(), tmp, 2, histSize, ranges, true, false);
+				normalize(tmp, tmp, 0, 1, NORM_MINMAX, -1, Mat());
+				hist_cur.push_back(tmp);
+			}
+
+		}
+
+		// Association of the pedestrians in the prev frame to the same pedestrians in the cur frame
+
+		// First case when we have no person in the prev frame ---> creation of new pedestrians
+		if (people.size() == 0) {
+			for (int i = 0; i < rect_final.size(); i++) {
+				Person p = Person(rect_final[i], i);
+				people.push_back(p);
+
+				// Assigning foreground
+				for (int j = 0; j < foreground_cur.size(); j++) {
+					if (isContained(foreground_cur[j], people[i].ROI) == true) {
+						people[i].foreground_cur_people.push_back(foreground_cur[j]);
+						people[i].foreground_prev_people.push_back(foreground_prev[j]);
+					}
+				}
+			}
+		}
+		else {
+
+			// Status to check if a pedestrian is updated in the following condition
+			vector<bool> update_status;																			// TRUE = UPDATED, FALSE = NOT UPDATED
+			for (int i = 0; i < people.size(); i++) {
+				update_status.push_back(false);
+			}
+
+			// Index to check if there are some miss rectangles
+			vector<int> index_missMatch;
+			for (int i = 0; i < people.size(); i++) {
+
+				// Delete the person if the buffer is > 7
+				
+				if (rect_final.size() == 0 && people[i].buf.size() > 7) {
+					people.erase(people.begin() + i);
+					i = i - 1;
+					break;
+				}
+				for (int j = 0; j < rect_final.size(); j++) {
+
+					// Comparison between Histograms -- Correlation
+					double comparison = compareHist(hist_prev[i], hist_cur[j], CV_COMP_CORREL);
+					// Uncomment this to show the values in the terminal output
+					// cout << "Comparison id: " << i << " with: " << j << " == " << comparison << endl;
+
+					if (comparison >= 0.6) {
+						people[i] = Person(rect_final[j], people[i].getID());
+						float disp = rect_final[j].x - people[i].ROI.x;
+						people[i].displacement.push_back(disp);
+						for (int w = 0; w < foreground_cur.size(); w++) {
+							if (isContained(foreground_cur[w], people[i].ROI) == true) {
+								people[i].foreground_cur_people.push_back(foreground_cur[w]);
+								people[i].foreground_prev_people.push_back(foreground_prev[w]);
+							}
+						}
+						rect_final.erase(rect_final.begin() + j);
+						hist_cur.erase(hist_cur.begin() + j);
+						j = j - 1;
+						update_status.at(people[i].getID()) = true;
+						break;
+					}
+					else {
+
+						index_missMatch.push_back(people[i].getID());
+						people[i].buf.push_back(people[i].ROI);
+
+					}
+
+				}
+				if (update_status[i] == false) {
+					
+					index_missMatch.push_back(people[i].getID());
+					people[i].buf.push_back(people[i].ROI);
+					
+				}			
+				
+			}
+
+			// Condition for not updated rectangles		
+			if (rect_final.size() != 0) {
+				for (int i = 0; i < update_status.size(); i++) {
+					if (update_status[i] == false) {
+						for (int j = 0; j < rect_final.size(); j++) {
+							Point2f center_rect_final = Point2f(rect_final[j].x + rect_final[j].width / 2, rect_final[j].y + rect_final[j].height / 2);
+
+							if (abs(people[i].center.x - center_rect_final.x) <= 75 || abs(people[i].ROI.x - rect_final[j].x) <= 75) {
+								people[i] = Person(rect_final[j], people[i].getID());
+								float disp = rect_final[j].x - people[i].ROI.x;
+								people[i].displacement.push_back(disp);
+								for (int w = 0; w < foreground_cur.size(); w++) {
+									if (isContained(foreground_cur[w], people[i].ROI) == true) {
+										people[i].foreground_cur_people.push_back(foreground_cur[w]);
+										people[i].foreground_prev_people.push_back(foreground_prev[w]);
+									}
+								}
+								update_status[i] = true;
+								rect_final.erase(rect_final.begin() + j);
+								hist_cur.erase(hist_cur.begin() + j);
+								j = j - 1;
+								break;
+							}
+							else {
+
+								index_missMatch.push_back(people[i].getID());
+								people[i].buf.push_back(people[i].ROI);
+
+							}
+						}
+					}
+				}
+			}
+			
+			
+			// Condition for missing Rectangles -- Buffer
+			if (index_missMatch.size() != 0) {
+				for (int i = 0; i < index_missMatch.size(); i++) {
+					for (int j = 0; j < people.size(); j++) {
+						if (people[j].getID() == index_missMatch[i]) {
+							if (people[j].buf.size() <= 7) {
+								people[j].set_displacement();
+								Rect tmp_rect = Rect(people[j].ROI.x + people[j].mean_dist, people[j].ROI.y, people[j].ROI.width, people[j].ROI.height);
+								people[j] = Person(tmp_rect, people[j].getID());
+								for (int w = 0; w < foreground_cur.size(); w++) {
+									if (isContained(foreground_cur[w], people[j].ROI) == true) {
+										people[j].foreground_cur_people.push_back(foreground_cur[w]);
+										people[j].foreground_prev_people.push_back(foreground_prev[w]);
+									}
+								}
+								//people[j].buf.clear();
+							}
+							else {
+								people.erase(people.begin() + j);
+								j = j - 1; // MAYBE????
+							}
+						}
+					}
+
+				}
+			}
+
+			// Condition for remaining rectangles
+			if (rect_final.size() != 0) {
+				for (int i = 0; i < rect_final.size(); i++) {
+					Person p = Person(rect_final[i], people.size());
+					people.push_back(p);
+					for (int w = 0; w < foreground_cur.size(); w++) {
+						if (isContained(foreground_cur[w], people[people.size() - 1].ROI) == true) {
+							people[people.size() - 1].foreground_cur_people.push_back(foreground_cur[w]);
+							people[people.size() - 1].foreground_prev_people.push_back(foreground_prev[w]);
+						}
+					}
+				}
+			}
+		}
+
+		vector<Person> copy_people;
+		for (int i = 0; i < people.size(); i++) {
+			copy_people.push_back(people[i]);
+		}
+		/*
+		for (int i = 0; i < people.size(); i++) {
+			for (int j = 0; j < copy_people.size(); j++) {
+				if ((euclideanDist(people[i].ROI.tl, copy_people[j].ROI.tl) <= 15 && euclideanDist(people[i].ROI.br, copy_people[j].ROI.br)) ||
+					(isContained(people[i].ROI.tl, copy_people[j].ROI) == true && isContained(people[i].ROI.br, copy_people[j].ROI) == true) ||
+					(isContained(copy_people[j].ROI.tl, people[i].ROI) == true && isContained(copy_people[j].ROI.br, people[i].ROI) == true)) {
+
+
+				}
+			}
+		}*/
+		// To draw rectangles and ID on the output video 
+		for (int i = 0; i < people.size(); i++) {
+			stringstream _id;
+			_id << people[i].getID();
+			rectangle(cur, people[i].ROI, Scalar(0, 255, 0));
+			// Uncomment this to visualize a rectangle in the ID zone
+			//rectangle(cur, Rect(people[i].ROI.x, people[i].ROI.y, 50, 30), Scalar(0, 0, 255));
+			String label = _id.str();
+			Size labelSize = getTextSize(label, FONT_HERSHEY_SIMPLEX, 1.5, 3, 0);
+			Point cornerTxt = Point(people[i].ROI.x, people[i].ROI.y + labelSize.height);
+			putText(cur, label, cornerTxt, FONT_HERSHEY_SIMPLEX, 1.5, Scalar(0, 0, 255), 3);
+		}
+
+		// To compute all the angles between the all motion vectors and the horizon
+		for (int i = 0; i < people.size(); i++) {
+			people[i].set_allDist_angles();
+		}
+
+		// To compute the final angles respect to the single person
+		vector<float> mean;
+		for (int i = 0; i < people.size(); i++) {
+			float sumAn, sumDis;
+			sumAn = 0;
+			sumDis = 0;
+			for (int j = 0; j < people[i].angles.size(); j++) {
+				sumAn = sumAn + people[i].angles[j];
+				sumDis = sumDis + people[i].all_dist[j];
+			}
+			people[i].mean_angle = sumAn / people[i].angles.size();
+			people[i].mean_dist = sumDis / people[i].all_dist.size();
+		}
+
+		// To draw the arrow relatives to the motion of each pedestrian
+		for (int i = 0; i < people.size(); i++) {
+			people[i].initArrow();
+			if (people[i].foreground_cur_people.size() != 0) {
+				drawArrow(cur, people[i].arrow_tail, people[i].arrow_head, Scalar(255, 0, 0), 9, 4, 8, 0);
+			}
+		}
+
+
+		cout << "Frame index: " << k << endl;
+		k++;
+		namedWindow("Output live frame", WINDOW_NORMAL);
+		resizeWindow("Output live frame", cur.cols, cur.rows);
+		imshow("Output live frame", cur);
+
+		// To save the current frame in the output video 
+		recordOutput << cur;
+		if (waitKey(1) >= 0) break;
+	}
+	return 0;
+}
+
+float angle(Point2f p1, Point2f p2) {
+	float angle = 0.0;
+	float a, b, i;
+	i = euclideanDist(p1, p2);
+	Point2f p3;
+	p3 = Point2f(p2.x, p1.y);
+	a = euclideanDist(p1, p3);
+	b = euclideanDist(p2, p3);
+	angle = acos(a / i);
+
+	if (p1.x < p2.x) {
+		angle = PI - angle;
+	}
+	else if (p1.x == p2.x) {
+		if (p1.y < p2.y) {
+			angle = angle + PI;
+		}
+	}
+
+	return angle;	// Return angle in Radiant
+}
+
+bool isContained(Point2f p, Rect r) {
+	if ((p.x >= r.tl().x && p.x <= r.br().x) && (p.y >= r.tl().y && p.y <= r.br().y)) {
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
+float euclideanDistP(Point& p, Point& q) {
+	Point diff;
+	diff.x = abs(p.x - q.x);
+	diff.y = abs(p.y - q.y);
+	return (cv::sqrt(diff.x*diff.x + diff.y*diff.y));
+}
+
+float euclideanDist(Point2f& p, Point2f& q) {
+	Point diff;
+	diff.x = abs(p.x - q.x);
+	diff.y = abs(p.y - q.y);
+	return (cv::sqrt(diff.x*diff.x + diff.y*diff.y));
+}
+
+void drawArrow(Mat image, Point start, Point end, Scalar color, int arrow_magnitude, int thickness, int line_type, int shift)
+{
+	//Draw the main line
+	line(image, start, end, color, thickness, line_type, shift);
+
+	//Compute the angle alpha
+	double angle = atan2(start.y - end.y, start.x - end.x);
+
+	//Compute the coordinates of the first segment
+	start.x = (end.x + arrow_magnitude * cos(angle + PI / 4));
+	start.y = (end.y + arrow_magnitude * sin(angle + PI / 4));
+
+	//Draw the first segment
+	line(image, start, end, color, thickness, line_type, shift);
+
+	//Compute the coordinates of the second segment
+	start.x = (end.x + arrow_magnitude * cos(angle - PI / 4));
+	start.y = (end.y + arrow_magnitude * sin(angle - PI / 4));
+
+	//Draw the second segment
+	line(image, start, end, color, thickness, line_type, shift);
+}
+
+int mode_single(vector<float> all_dist) {
+	int rating, j, h;
+	float largest = 0;
+	float modeValue1 = 0;
+	float modeValue2 = 0;
+	float min, max;
+	min = all_dist[0];
+	max = all_dist[0];
+	vector<int> freq;
+
+	for (int i = 0; i < all_dist.size(); i++) {
+		if (all_dist[i] < 0) {
+			all_dist.at(i) = 0;
+		}
+	}
+
+	for (int i = 0; i < all_dist.size(); i++) {
+		if (all_dist[i] <= min) {
+			min = all_dist[i];
+		}
+		if (all_dist[i] >= max) {
+			max = all_dist[i];
+		}
+	}
+	int int_max = int(max) + 1;
+	int int_min = int(min);
+
+	if (int_min != 0) {
+		for (int i = 0; i < int_min; i++) {
+			freq.push_back(0);
+		}
+	}
+	for (rating = int(min); rating <= int(max); rating++) {
+		freq.push_back(0);
+	}
+
+	for (j = 0; j < all_dist.size(); j++) {
+		freq.at(int(all_dist[j])) = freq[int(all_dist[j])] + 1;
+	}
+
+	for (rating = int(min); rating <= int(max); rating++) {
+		if (freq[rating] > largest) {
+			largest = freq[rating];
+			modeValue1 = rating;
+		}
+	}
+	freq.at(modeValue1) = 0;
+
+	return int(modeValue1);
+
+}
+
+vector<int> mode(vector<float> all_dist) {
+	int rating, j, h;
+	float largest = 0;
+	float modeValue1 = 0;
+	float modeValue2 = 0;
+	float min, max;
+	min = all_dist[0];
+	max = all_dist[0];
+	vector<int> freq;
+
+	for (int i = 0; i < all_dist.size(); i++) {
+		if (all_dist[i] < 0) {
+			all_dist.at(i) = 0;
+		}
+	}
+
+	for (int i = 0; i < all_dist.size(); i++) {
+		if (all_dist[i] <= min) {
+			min = all_dist[i];
+		}
+		if (all_dist[i] >= max) {
+			max = all_dist[i];
+		}
+	}
+	int int_max = int(max) + 1;
+	int int_min = int(min);
+
+	if (int_min != 0) {
+		for (int i = 0; i < int_min; i++) {
+			freq.push_back(0);
+		}
+	}
+	for (rating = int(min); rating <= int(max); rating++) {
+		freq.push_back(0);
+	}
+
+	for (j = 0; j < all_dist.size(); j++) {
+		freq.at(int(all_dist[j])) = freq[int(all_dist[j])] + 1;
+	}
+
+	for (rating = int(min); rating <= int(max); rating++) {
+		if (freq[rating] > largest) {
+			largest = freq[rating];
+			modeValue1 = rating;
+		}
+	}
+	freq.at(modeValue1) = 0;
+	largest = 0;
+	for (int i = 0; i < freq.size(); i++) {
+		if (freq[i] > largest) {
+			largest = freq[i];
+			modeValue2 = i;
+		}
+	}
+	vector<int> output;
+	output.push_back(modeValue1);		// First mode value
+	output.push_back(modeValue2);		// Second mode value
+
+	return output;
+
+}
+
+void drawDisplacement(Mat img, vector<Point2f> keypointsCur, vector<Point2f> keypointsPrev, vector<float> allDisp) {
+	float averageDisp = 0.0;
+	float sum = 0.0;
+	for (int i = 0; i < allDisp.size(); i++) {
+		sum = sum + allDisp[i];
+	}
+	averageDisp = sum / allDisp.size();
+
+	float averagePosX = 0.0;
+	sum = 0.0;
+	for (int i = 0; i < keypointsCur.size(); i++) {
+		sum = sum + keypointsCur[i].x;
+	}
+	averagePosX = sum / keypointsCur.size();
+
+	float averagePosY = 0.0;
+	sum = 0.0;
+	for (int i = 0; i < keypointsCur.size(); i++) {
+		sum = sum + keypointsCur[i].y;
+	}
+	averagePosY = sum / keypointsCur.size();
+
+	Point2f posCur = Point2f(averagePosX, averagePosY);
+
+	averagePosX = 0.0;
+	sum = 0.0;
+	for (int i = 0; i < keypointsPrev.size(); i++) {
+		sum = sum + keypointsPrev[i].x;
+	}
+	averagePosX = sum / keypointsPrev.size();
+
+	averagePosY = 0.0;
+	sum = 0.0;
+	for (int i = 0; i < keypointsPrev.size(); i++) {
+		sum = sum + keypointsPrev[i].y;
+	}
+	averagePosY = sum / keypointsPrev.size();
+
+	Point2f posPrev = Point2f(averagePosX, averagePosY);
+	drawArrow(img, posPrev, posCur, Scalar(255, 0, 0), 9, 2, 8, 0);
+
+}
+
+

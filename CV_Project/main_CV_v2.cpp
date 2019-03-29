@@ -1,3 +1,4 @@
+
 #include <opencv2/opencv.hpp>
 #include <opencv2\highgui\highgui.hpp>
 #include <opencv2/dnn.hpp>
@@ -155,6 +156,7 @@ public:
 		}
 	};
 };
+Mat applyCustomColorMap(Mat& im_gray);
 
 
 
@@ -181,7 +183,7 @@ int main(int argc, char **argv)
 	VideoCapture cap;
 
 	// Change HERE to set the video you want
-	cap.open("7.mp4");									// <-------- VIDEO INPUT
+	cap.open("27.mp4");									// <-------- VIDEO INPUT
 	if (!cap.isOpened())
 	{
 		cout << "Couldn't open video: " << endl;
@@ -639,6 +641,7 @@ int main(int argc, char **argv)
 						people[i].foreground_prev_people.push_back(foreground_prev[j]);
 					}
 				}
+
 			}
 		}
 		else {
@@ -656,6 +659,7 @@ int main(int argc, char **argv)
 				// Delete the person if the buffer is > 7
 				if (rect_final.size() == 0 && people[i].buf.size() > 7) {
 					people.erase(people.begin() + i);
+					update_status.erase(update_status.begin() + i);
 					i = i - 1;
 					break;
 				}
@@ -679,17 +683,17 @@ int main(int argc, char **argv)
 						rect_final.erase(rect_final.begin() + j);
 						hist_cur.erase(hist_cur.begin() + j);
 						j = j - 1;
-						update_status.at(people[i].getID()) = true;
+						update_status.at(i) = true;
 						break;
 					}
 
 				}
 			}
-
+			
 			// Condition for not updated rectangles
 			if (rect_final.size() != 0) {
 				for (int i = 0; i < update_status.size(); i++) {
-					if (update_status[i] == true) {
+					if (update_status[i] == false) {
 						for (int j = 0; j < rect_final.size(); j++) {
 							Point2f center_rect_final = Point2f(rect_final[j].x + rect_final[j].width / 2, rect_final[j].y + rect_final[j].height / 2);
 
@@ -718,13 +722,24 @@ int main(int argc, char **argv)
 					}
 				}
 			}
+			else {
+				for (int i = 0; i < update_status.size(); i++) {
+					if (update_status[i] == false) {
+					
+						people.erase(people.begin() + i);
+						update_status.erase(update_status.begin() + i);
+						i = i - 1;
+					
+					}
+				}
+			}
 
 			// Condition for missing Rectangles -- Buffer
 			if (index_missMatch.size() != 0) {
 				for (int i = 0; i < index_missMatch.size(); i++) {
 					for (int j = 0; j < people.size(); j++) {
 						if (people[j].getID() == index_missMatch[i]) {
-							if (people[j].buf.size() <= 7) {
+							if (people[j].buf.size() <= 3) {
 								people[j].set_displacement();
 								Rect tmp_rect = Rect(people[j].ROI.x + people[j].mean_displacement, people[j].ROI.y, people[j].ROI.width, people[j].ROI.height);
 								people[j] = Person(tmp_rect, people[j].getID());
@@ -734,11 +749,12 @@ int main(int argc, char **argv)
 										people[j].foreground_prev_people.push_back(foreground_prev[w]);
 									}
 								}
-								people[j].buf.clear();
+								//people[j].buf.clear();
 							}
 							else {
 								people.erase(people.begin() + j);
-								// j = j - 1 // MAYBE????
+								update_status.erase(update_status.begin() + j);
+								j = j - 1; // MAYBE????
 							}
 						}
 					}
@@ -761,8 +777,63 @@ int main(int argc, char **argv)
 			}
 		}
 
+		Rect rect_scale_x;
+		//rect_scale_x = Mat(cur.rows, cur.cols / 10, );
+		Rect rect_scale_y;
+		//ect_scale_y = Rect(cur,1050,0,cur.rows / 10, cur.col,);
+		Point p1, p2, p3, p4, p5, p6, p7, p8;
+		p1.x = 0;
+		p1.y = cur.rows - 5;
+
+		p2.x = cur.cols / 2;
+		p2.y = cur.rows;
+		p3.x = cur.cols / 2;
+		p3.y = cur.rows - 5;
+		p4.x = cur.cols;
+		p4.y = cur.rows;
+		rectangle(cur, p1, p2, Scalar(0, 0, 255), CV_FILLED);
+		rectangle(cur, p3, p4, Scalar(0, 255, 0), CV_FILLED);
+		String label = "Pedestrian motion";
+		Size labelSize = getTextSize(label, FONT_HERSHEY_SIMPLEX, 1, 1, 0);
+		Point cornerTxt = Point(cur.cols - 320, cur.rows - 40);
+		putText(cur, label, cornerTxt, FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 0, 0), 2);
+
+
+
+
+		Point p1_, p2_, p3_, p4_, p5_, p6_, p7_, p8_;
+		p1_.x = 0;
+		p1_.y = 0;
+
+		p2_.x = cur.cols / 2;
+		p2_.y = 5;
+		p3_.x = cur.cols / 2;
+		p3_.y = 0;
+		p4_.x = cur.cols;
+		p4_.y = 5;
+		rectangle(cur, p1_, p2_, Scalar(0, 255, 255), CV_FILLED);
+		rectangle(cur, p3_, p4_, Scalar(255, 0, 0), CV_FILLED);
+		String label_ = "Camera motion";
+		//Size labelSize_ = getTextSize(label, FONT_HERSHEY_SIMPLEX, 1, 1, 0);
+		Point cornerTxt_ = Point(cur.cols - 320, 50);
+		putText(cur, label_, cornerTxt_, FONT_HERSHEY_SIMPLEX, 1, Scalar(255, 255, 255), 2);
+
+		//putText(cur, label, cornerTxt, FONT_HERSHEY_SIMPLEX, 1.5, Scalar(0, 0, 255), 3);
+		p5.x = 1800;
+		p5.y = 100;
+		p6.x = 1850;
+		p6.y = 150;
+
+		p7.x = 1850;
+		p7.y = 100;
+		p8.x = 1900;
+		p8.y = 150;
+
+		//rectangle(cur, p7, p8, Scalar(0, 255, 255),CV_FILLED,CV_CONTOURS_MATCH_I1);
+		//rectangle(cur, p5, p6, Scalar(0, 255, 0), CV_FILLED);
+	//	imshow("cuir", cur);
 		// To draw rectangles and ID on the output video 
-		for (int i = 0; i < people.size(); i++) {
+		/*for (int i = 0; i < people.size(); i++) {
 			stringstream _id;
 			_id << people[i].getID();
 			rectangle(cur, people[i].ROI, Scalar(0, 255, 0));
@@ -772,7 +843,9 @@ int main(int argc, char **argv)
 			Size labelSize = getTextSize(label, FONT_HERSHEY_SIMPLEX, 1.5, 3, 0);
 			Point cornerTxt = Point(people[i].ROI.x, people[i].ROI.y + labelSize.height);
 			putText(cur, label, cornerTxt, FONT_HERSHEY_SIMPLEX, 1.5, Scalar(0, 0, 255), 3);
-		}
+
+		}*/
+
 
 		// To compute all the angles between the all motion vectors and the horizon
 		for (int i = 0; i < people.size(); i++) {
@@ -792,20 +865,93 @@ int main(int argc, char **argv)
 			people[i].mean_angle = sumAn / people[i].angles.size();
 			people[i].mean_dist = sumDis / people[i].all_dist.size();
 		}
-
 		// To draw the arrow relatives to the motion of each pedestrian
 		for (int i = 0; i < people.size(); i++) {
 			people[i].initArrow();
-			if (people[i].foreground_cur_people.size() != 0) {
+
+			/*if (people[i].foreground_cur_people.size() != 0) {
 				drawArrow(cur, people[i].arrow_tail, people[i].arrow_head, Scalar(255, 0, 0), 9, 4, 8, 0);
+			}*/
+		}
+		//color map
+		vector<Mat> Rois;
+		vector<Mat> colors;
+		Mat color_bg;
+		float direction = pt4.x - center.x;
+		float gain_color_bg = direction / 350;//(cur.cols / 6);
+		Scalar component_color_bg;
+		if (direction >= 0) {
+			component_color_bg = Scalar(255, 0, 0);
+			//blu
+		}
+		else {
+			component_color_bg = Scalar(0, 255, 255);
+			//giallo
+		}
+
+		double alpha_bg = abs(gain_color_bg);
+		if (alpha_bg > 0.9) { alpha_bg = 0.9; }
+		color_bg = Mat(cur.size(), CV_8UC3, component_color_bg);
+		addWeighted(color_bg, alpha_bg, cur, 1.0 - alpha_bg, 0.0, cur);
+
+		for (int i = 0; i < people.size(); i++) {
+
+			Mat Rois, colors;
+
+
+			if (people[i].ROI.x < 0) {
+				people[i].ROI.x = 0;
+			}
+			if (people[i].ROI.y < 0 + 5) {//+ 5
+				people[i].ROI.y = 0 + 6;// 5
+			}
+			if (people[i].ROI.y + people[i].ROI.height > cur.rows - 5) {//- 5 
+				people[i].ROI.height = cur.rows - people[i].ROI.y - 6;//- 5
+			}
+			if (people[i].ROI.x + people[i].ROI.width > cur.cols) {
+				people[i].ROI.width = cur.cols - people[i].ROI.x;
+			}
+			Rois = cur(people[i].ROI);
+			//a = people[i].mean_angle * 20;
+			colors = Mat(Rois.size(), CV_8UC3, component_color_bg);
+			double alpha = -alpha_bg;
+			addWeighted(colors, alpha, Rois, 1.0 - alpha, 0.0, Rois);
+
+		}
+		for (int i = 0; i < people.size(); i++) {
+			Mat Rois, colors;
+			float direction_fg = people[i].arrow_head.x - people[i].arrow_tail.x;
+			float gain_color_fg = direction_fg / 100;//(cur.cols / 6);
+			Scalar component_color_fg;
+			if (direction_fg >= 0) {
+				component_color_fg = Scalar(0, 255, 0);
+				//verde
+			}
+			else {
+				component_color_fg = Scalar(0, 0, 255);
+				//rosso
+			}
+
+			Rois = cur(people[i].ROI);
+			float height_fac = Rois.rows / (cur.rows / 2);
+			if (people[i].foreground_cur_people.size() != 0) {
+				colors = Mat(Rois.size(), CV_8UC3, component_color_fg);
+				double alpha = 0.4 + abs(gain_color_fg);
+				alpha = alpha * height_fac;
+				if (alpha < 0.01) {
+					alpha = 0.01;
+				}
+				if (alpha > 0.9) { alpha = 0.9; }
+				addWeighted(colors, alpha, Rois, 1.0 - alpha, 0.0, Rois);
 			}
 		}
+
 
 
 		cout << "Frame index: " << k << endl;
 		k++;
 		namedWindow("Output live frame", WINDOW_NORMAL);
-		resizeWindow("Output live frame", cur.cols, cur.rows);
+		resizeWindow("Output live frame", cur.cols / 2, cur.rows / 2);
 		imshow("Output live frame", cur);
 
 		// To save the current frame in the output video 
@@ -1039,5 +1185,4 @@ void drawDisplacement(Mat img, vector<Point2f> keypointsCur, vector<Point2f> key
 	drawArrow(img, posPrev, posCur, Scalar(255, 0, 0), 9, 2, 8, 0);
 
 }
-
 
